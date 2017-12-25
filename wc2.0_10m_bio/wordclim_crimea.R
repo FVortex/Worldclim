@@ -843,8 +843,9 @@ P.tragium_toMl <- P.tragium_all_points
 str(res_no_nas)
 
 set.seed(999)
-background_all_toMl_shuffled <- res_no_nas[sample(nrow(res_no_nas), nrow(res_no_nas)), ] 
-
+rand_inds_background <- sample(nrow(res_no_nas), nrow(res_no_nas))
+background_all_toMl_shuffled <- res_no_nas[rand_inds_background, ] 
+##p_shuffled <- p[rand_inds]
 #pull <- sample(x = 1:nrow(res_no_nas), size = 130)
 #leave <- setdiff(1:nrow(res_no_nas), pull)
 
@@ -852,145 +853,79 @@ background_130points <- as.matrix(background_all_toMl_shuffled[1:130,4:22])
 background_rest_120points <- as.matrix(background_all_toMl_shuffled[-c(1:130),4:22])
 
 
-p <- c(rep(1, nrow(P.tragium_toMl)), rep(0, nrow(background_130points)))
+background_130points_coords <- as.matrix(background_all_toMl_shuffled[1:130,1:2])
+background_rest_120points_coords <- as.matrix(background_all_toMl_shuffled[-c(1:130),1:2])
 
-mat = as.matrix(unname(rbind(P.tragium_toMl, background_130points)))
-test = as.matrix(unname(background_rest_120points))
+P.tragium_first_65points <- P.tragium_toMl[1:65,]
+P.tragium_rest_65points <- P.tragium_toMl[-c(1:65),]
 
-model <- maxnet(p = p, data = as.data.frame(scale(mat, center = T, scale = T)),  maxnet.formula(p,as.data.frame(scale(mat, center = T, scale = T))))
+
+p_train <- c(rep(1, nrow(background_130points)), rep(0, nrow(P.tragium_first_65points)))
+p_test <- c(rep(1, nrow(background_rest_120points)), rep(0, nrow(P.tragium_rest_65points)))
+
+mat = as.matrix(unname(rbind(background_130points, P.tragium_first_65points)))
+test = as.matrix(unname(background_rest_120points, P.tragium_rest_65points))
+
+model <- maxnet(p = p_train, data = as.data.frame(scale(mat, center = T, scale = T)),  maxnet.formula(p_train, as.data.frame(scale(mat, center = T, scale = T))))
 pred_maxnet <- predict(model, as.data.frame(scale(test, center = T, scale = T)), s = "lambda.min")
 
-
+which(pred_maxnet>2)
 #getting coordinates for prediction
 #maxnet_coords_over05 <- res_no_nas[-c(1:130),1:3][which(pred_maxnet>0.5),1:3]
 maxnet_coords_over1 <- background_all_toMl_shuffled[-c(1:130),1:3][which(pred_maxnet>1),1:3]
 maxnet_coords_over3 <- background_all_toMl_shuffled[-c(1:130),1:3][which(pred_maxnet>3),1:3]
 
-model <- glmnet(mat, p, family="multinomial", alpha=1)
-pred <- predict(model, test, s = "lambda.min", type = "class")
-plot(pred[,1,])
-predict(model,newx=test,s=c(0.1,0.05))
 
-results <-predict.glmnet(model, s=0.01, test, type="response")
-background_predicted_1 <- background_rest_120points[which(pred>3),]
-background_130points
-
+confusionMatrix(pred_maxnet, p_test)
 
 library(caret)
 #common settings
-training1 <- as.data.frame(rbind(P.tragium_toMl, background_130points))
+training1 <- as.data.frame(mat)
 rownames(training1) <- seq_along(rownames(training1))
-training1$Class <- as.factor(p)
-testing1  <- as.data.frame(background_rest_120points)
+training1$Class <- as.factor(p_train)
+testing1  <- as.data.frame(test)
 
 fitControl <- trainControl(## 10-fold CV
   method = "repeatedcv",
   number = 10,
   ## repeated ten times
-  repeats = 10)
-# random forest
-set.seed(825)
-rfFit1 <- caret::train(Class ~ ., data = training1, #removing metadata columns, but no class column
-  method = "rf", 
-  trControl = fitControl,
-## This last option is actually one
-## for gbm() that passes through
-  verbose = FALSE,
- preProcess = c('center','scale')
-)
-rfFit1
-
-predicted_rfFit1 <- predict(rfFit1, newdata = testing1)
-
-predicted_coord_rfFit1 <- background_all_toMl_shuffled[-c(1:130),1:2][which(predicted_rfFit1==1),]
-
-
-set.seed(825)
-nbFit1 <- caret::train(Class ~ ., data = training1, #removing metadata columns, but no class column
-                method = "nb", 
-                trControl = fitControl,
-                ## This last option is actually one
-                ## for gbm() that passes through
-                verbose = FALSE,
-                preProcess = c('center','scale')
-)
-nbFit1
-
-predicted_nbFit1 <- predict(nbFit1, newdata = testing1)
-
-predicted_coord_nbFit1 <- background_all_toMl_shuffled[-c(1:130),1:2][which(predicted_nbFit1==1),]
-
-set.seed(825)
-mlpMLFit1 <- caret::train(Class ~ ., data = training1, #removing metadata columns, but no class column
-                   method = "mlpML", 
-                   trControl = fitControl,
-                   ## This last option is actually one
-                   ## for gbm() that passes through
-                   verbose = FALSE,
-                   preProcess = c('center','scale')
-)
-mlpMLFit1
-
-predicted_mlpMLFit1 <- predict(mlpMLFit1, newdata = testing1)
-
-predicted_coord_mlpMLFit1 <- background_all_toMl_shuffled[-c(1:130),1:2][which(predicted_mlpMLFit1==1),]
-
-#
-set.seed(825)
-svmRadialFit1 <- caret::train(Class ~ ., data = training1, #removing metadata columns, but no class column
-                              method = "svmRadial", 
-                              trControl = fitControl,
-                              ## This last option is actually one
-                              ## for gbm() that passes through
-                              verbose = FALSE,
-                              preProcess = c('center','scale')
-)
-svmRadialFit1
-
-predicted_svmRadialFit1 <- predict(svmRadialFit1, newdata = testing1)
-
-predicted_coord_svmRadialFit1  <- background_all_toMl_shuffled[-c(1:130),1:2][which(predicted_svmRadialFit1 ==1),]
-
-
-#
-set.seed(825)
-gbmFit1 <- caret::train(Class ~ ., data = training1, #removing metadata columns, but no class column
-                              method = "gbm", 
-                              trControl = fitControl,
-                              ## This last option is actually one
-                              ## for gbm() that passes through
-                              verbose = FALSE,
-                              preProcess = c('center','scale')
-)
-gbmFit1
-
-predicted_gbmFit1 <- predict(gbmFit1, newdata = testing1)
-
-predicted_coord_gbmFit1  <- background_all_toMl_shuffled[-c(1:130),1:2][which(predicted_gbmFit1 ==1),]
-
+  repeats = 10,
+#  savePredictions = T,
+  ## Estimate class probabilities
+ # classProbs = TRUE
+  ## Evaluate performance using 
+  ## the following function
+  #summaryFunction = twoClassSummary
+  )
 #caret train in a loop
 
-methods_to_loop <- c('gbm', 'mlpML', 'nb', 'rf', 'svmRadial', 'glmnet', 'neuralnet')
+methods_to_loop <- c('plsRglm', 'LogitBoost','gbm', 'mlpML', 'nb', 'rf', 'svmRadial')
 
+accuracies <- c()
+mean_accuracies <- c()
 for (i in methods_to_loop){
   set.seed(825)
   tmpFit1 <- caret::train(Class ~ ., data = training1, #removing metadata columns, but no class column
                         method = i, 
                         trControl = fitControl,
+  #                      metric = 'ROC',
                         ## This last option is actually one
                         ## for gbm() that passes through
                         verbose = FALSE,
                         preProcess = c('center','scale')
   )
   #gbmFit1
+  print(paste0(i, tmpFit1$results$Accuracy))
+  accuracies <- c(accuracies, paste0(tmpFit1$results$Accuracy, collapse = ', '))
+  mean_accuracies <- c(mean_accuracies, mean(tmpFit1$results$Accuracy))
+  assign(paste0(i, 'Fit'), tmpFit1)
+  tmp2 <- predict(tmpFit1, newdata = testing1)
+  tmp3  <- rbind(background_130points_coords, background_rest_120points_coords)[which(tmp2 ==1),]
 
-  predicted_tmpFit1 <- predict(tmpFit1, newdata = testing1)
-  predicted_coord_tmpFit1  <- background_all_toMl_shuffled[-c(1:130),1:2][which(predicted_tmpFit1 ==1),]
-
-  assign(paste0('predicted_coord_', i), predicted_coord_tmpFit1)
+  assign(paste0('predicted_coord_', i), tmp3)
 }
 
-par(mfrow = c(3,2),
+par(mfrow = c(3,3),
     mar = rep(1,4))
 #svg('/home/mikhail/Documents/lsh17/maxent_p.tragium_several_ps.svg', width = 8, height = 8)
 #svg('/home/mikhail/Documents/lsh17/maxent_p.tragium_p_1.svg', width = 8, height = 8)
@@ -1010,7 +945,6 @@ points(x = maxnet_coords_over1$Longitude, y = maxnet_coords_over1$Latitude, col 
 caret_methods <- grep('predicted_coord_', x = ls(), value = T)
 
 
-
 for (i in caret_methods){
   plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = (gsub(pattern = 'predicted_coord_*', replacement = '', gsub(pattern = '*Fit1', replacement = '', i))))
   lines(x = crimea$x, y = crimea$y)
@@ -1019,99 +953,151 @@ for (i in caret_methods){
   points(x = get(i)$Longitude, y = get(i)$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
   #dev.off()
 }
+
+names
+barplot(mean_accuracies, names.arg = methods_to_loop)
+#ROCs
+
+library(pROC)
+# Select a parameter setting
+selectedIndices <- tmpFit1$pred$mtry == 2
+# Plot:
+plot.roc(rfFit$pred$obs[selectedIndices],
+         rfFit$pred$M[selectedIndices])
+
+
+data(aSAH)
+
+# Basic example
+roc(aSAH$outcome, aSAH$s100b,
+    levels=c("Good", "Poor"))
+
+roc(as.numeric(pred_maxnet>3), pred_maxnet)
+
+predicted_y <- pred_maxnet
+predicted_y[pred_maxnet>2]  <- 1
+predicted_y[pred_maxnet<=2] <- 0
+Yactual                       <- mat[1:t, ncol(mat)]
+confusion_matrix              <- ftable(Yactual, predicted_y)
+accuracy                      <- 100* (sum(diag(confusion_matrix)) / length(predicted_y))
+
+
+
+
+#ROC Curves
+
+# Calculate sensitivity and false positive measures for logit model (glm)
+
+fity_ypos <- FullcovModel$fitted[y == 1]
+fity_yneg <- FullcovModel$fitted[y == 0]
+
+sort_fity <- sort(FullcovModel$fitted.values)
+
+sens <- 0
+spec_c <- 0
+
+
+  sens <- c(sens, mean(fity_ypos >= sort_fity[i]))
+  spec_c <- c(spec_c, mean(fity_yneg >= sort_fity[i]))
   
+} 
 
-# #svg('/home/mikhail/Documents/lsh17/rf_p.tragium_1_cutoff.svg', width = 8, height = 8)
-lwd = 9
-pch = 22
-plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = 'Worldclim data in 5 clusters')
-lines(x = crimea$x, y = crimea$y)
-alpha = 15
-points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
-#plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
-points(x = predicted_coord_rfFit1$Longitude, y = predicted_coord_rfFit1$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
-#dev.off()
+# roc curve on glm model. Calculate sensitivity and false positive measure for random forest model
 
+fity_ypos2 <- as.numeric(rf$pred[y == 1]) - 1
+fity_yneg2 <- as.numeric(rf$pred[y == 0]) - 1
 
-# #svg('/home/mikhail/Documents/lsh17/nb_p.tragium_1_cutoff.svg', width = 8, height = 8)
-lwd = 9
-pch = 22
-plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = 'Worldclim data in 5 clusters')
-lines(x = crimea$x, y = crimea$y)
-alpha = 15
-points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
-#plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
-points(x = predicted_coord_nbFit1$Longitude, y = predicted_coord_nbFit1$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
-#dev.off()
+sort_fity2 <- as.numeric(sort(rf$pred)) - 1
 
+sens2 <- 0
+spec_c2 <- 0
 
-plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = 'Worldclim data in 5 clusters')
-lines(x = crimea$x, y = crimea$y)
-alpha = 15
-points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
-#plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
-points(x = predicted_coord_mlpMLFit1$Longitude, y = predicted_coord_mlpMLFit1$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
-#dev.off()
+for (i in length(sort_fity2):1){
+  sens2 <- (c(sens2, mean(fity_ypos2 >= sort_fity2[i])))
+  spec_c2 <- (c(spec_c2, mean(fity_yneg2 >= sort_fity2[i])))
+} 
 
-points(x = predicted_P.tragium2$Longitude, y = predicted_P.tragium2$Latitude, col =rgb(red=255, green=255, blue=255, alpha=alpha, max=255), lwd = .15, pch = 20)
-points(x = predicted_P.tragium1$Longitude, y = predicted_P.tragium1$Latitude, col =rgb(red=255, green=255, blue=255, alpha=alpha, max=255), lwd = .15, pch = 20)
-points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = 16, lwd = 3)
-legend('bottomright', legend = c('Samples collected', "Predicted"), pch = c(16, 20), col = c(1, rgb(red=255, green=255, blue=255, alpha=55, max=255)))
+# plot ROC curves
+
+plot(spec_c, sens, xlim = c(0, 1), ylim = c(0, 1), type = "l", 
+     xlab = "false positive rate", ylab = "true positive rate", col = 'blue')
+abline(0, 1, col= "black")
+
+lines(spec_c2, sens2, col='green')
+legend("topleft", legend = c("logit","random forest") , pch = 15, bty = 'n', col = c("blue","green"))
 
 
-training2 <- all_and_P.tragium_res_no_nas_class[1:1000,]
-testing2  <- all_and_P.tragium_res_no_nas_class[-c(1:131),]
+#their glmnet
 
-set.seed(825)
-rfFit2 <- #train(Class ~ ., data = training2[-c(1:3)], #removing metadata columns, but no class column
-  method = "rf", 
-trControl = fitControl,
-## This last option is actually one
-## for gbm() that passes through
-verbose = FALSE#,
-# preProcess = c('center','scale')
-)
-rfFit2
-#save(nbFit1, file = '/home/mikhail/Documents/lsh17/nbFit1_P.tragium.rda')
-#getTree(rfFit1)
+library(ROCR)
+library(glmnet)
+library(caret)
 
-training3 <- all_and_P.tragium_res_no_nas_class[1:3000,]
-testing3  <- all_and_P.tragium_res_no_nas_class[-c(1:131),]
-set.seed(825)
-rfFit3 <- #train(Class ~ ., data = training3[-c(1:3)], #removing metadata columns, but no class column
-  method = "rf", 
-trControl = fitControl,
-## This last option is actually one
-## for gbm() that passes through
-verbose = FALSE#,
-# preProcess = c('center','scale')
-)
-nbFit3
-#save(nbFit1, file = '/home/mikhail/Documents/lsh17/nbFit1_P.tragium.rda')
-#getTree(rfFit1)
+df <- data.matrix(… ) # dataframe w/ predictor variables & a response variable
+# col1 = response var; # cols 2:10 = predictor vars
 
-predicted1 <- predict(rfFit1, newdata = (testing1[,-c(1:3,23)]))
-predicted2 <- predict(rfFit2, newdata = (testing2[,-c(1:3,23)]))
-predicted3 <- predict(rfFit3, newdata = (testing3[,-c(1:3,23)]))
+# Create training subset for model development & testing set for model performance testing
+inTrain <- createDataPartition(df$ResponsVar, p = .75, list = FALSE)
+Train <- df[ inTrain, ]
+Test <- df[ -inTrain, ]
 
-predicted_P.tragium1 <- testing[which(predicted1== 'P.tragium'),]
-predicted_P.tragium2 <- testing[which(predicted2== 'P.tragium'),]
+# Run model over training dataset
+lasso.model <- cv.glmnet(x = Train[,2:10], y = Train[,1], 
+                         family = 'binomial', type.measure = 'auc')
 
-predicted_P.tragium3 <- testing[which(predicted3== 'P.tragium'),]
-par(mfrow =c (1,2))
+# Apply model to testing dataset
+Test$lasso.prob <- predict(lasso.model,type="response", 
+                           newx = Test[,2:10], s = 'lambda.min')
+pred <- prediction(Test$lasso.prob, Test$ResponseVar)
+
+# calculate probabilities for TPR/FPR for predictions
+perf <- performance(pred,"tpr","fpr")
+performance(pred,"auc") # shows calculated AUC for model
+plot(perf,colorize=FALSE, col="black") # plot ROC curve
+lines(c(0,1),c(0,1),col = "gray", lty = 4 )
+
+#Mine
+
+pred_maxnet <- predict(model, type="logistic", as.data.frame(scale(test, center = T, scale = T)), s = "lambda.min")
+pred <- prediction(Test$lasso.prob, Test$ResponseVar)
 
 
-svg('/home/mikhail/Documents/lsh17/rf_p.tragium_1_cutoff.svg', width = 8, height = 8)
-lwd = 9
-pch = 22
-plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, col = rainbow(length(unique(cut_hclusted)))[cut_hclusted], asp = 1, pch = 20, main = 'Worldclim data in 5 clusters')
-lines(x = crimea$x, y = crimea$y)
-alpha = 15
-#plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
-points(x = predicted_P.tragium3$Longitude, y = predicted_P.tragium3$Latitude, col =rgb(red=255, green=255, blue=255, alpha=alpha, max=255), lwd = .15, pch = 20)
 
-points(x = predicted_P.tragium2$Longitude, y = predicted_P.tragium2$Latitude, col =rgb(red=255, green=255, blue=255, alpha=alpha, max=255), lwd = .15, pch = 20)
-points(x = predicted_P.tragium1$Longitude, y = predicted_P.tragium1$Latitude, col =rgb(red=255, green=255, blue=255, alpha=alpha, max=255), lwd = .15, pch = 20)
-points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = 16, lwd = 3)
-legend('bottomright', legend = c('Samples collected', "Predicted"), pch = c(16, 20), col = c(1, rgb(red=255, green=255, blue=255, alpha=55, max=255)))
+# alternative inpt data - some positive signals in testing set
+
+#for testing 
+
+#uniform input data
+
+background_250points <- as.matrix(res_no_nas[,4:22])
+P.tragium_toMl <- P.tragium_all_points
+
+background_P.tragium_380points <- rbind(background_250points, P.tragium_toMl)
+
+set.seed(999)
+rand_inds <- sample(nrow(background_P.tragium_380points), nrow(background_P.tragium_380points))
+p_380points <- c(rep(0, nrow(background_250points)), rep(1, nrow(P.tragium_toMl)))
+background_P.tragium_380points <- background_P.tragium_380points[rand_inds,]
+p_380points <- p_380points[rand_inds]
+
+
+mat = as.matrix(unname(background_P.tragium_380points[1:200,]))
+test = as.matrix(unname(background_P.tragium_380points[-c(1:200),]))
+
+model <- maxnet(p_380points[1:200], as.data.frame(scale(mat, center = T, scale = T)),  maxnet.formula(p_380points[1:200],as.data.frame(scale(mat, center = T, scale = T))))
+pred_maxnet <- predict(model, as.data.frame(scale(test, center = T, scale = T)), s = "lambda.min")
+
+#caret models ROC
+
+# 
+caret_fits <- grep('Fit', x = ls(), value = T)
+
+
+L <- list(gbmFit=gbmFit,LogitBoostFit=LogitBoostFit,mlpMLFit=mlpMLFit,nbFit=nbFit,plsRglmFit=plsRglmFit,rfFit=rfFit,svmRadialFit=svmRadialFit)
+
+results <- resamples(L)
+# Table comparison
+summary(results)
+
+#
 
