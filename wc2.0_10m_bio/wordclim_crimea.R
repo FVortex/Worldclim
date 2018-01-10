@@ -864,7 +864,7 @@ p_train <- c(rep(1, nrow(background_130points)), rep(0, nrow(P.tragium_first_65p
 p_test <- c(rep(1, nrow(background_rest_120points)), rep(0, nrow(P.tragium_rest_65points)))
 
 mat = as.matrix(unname(rbind(background_130points, P.tragium_first_65points)))
-test = as.matrix(unname(background_rest_120points, P.tragium_rest_65points))
+test = as.matrix(unname(rbind(background_rest_120points, P.tragium_rest_65points)))
 
 model <- maxnet(p = p_train, data = as.data.frame(scale(mat, center = T, scale = T)),  maxnet.formula(p_train, as.data.frame(scale(mat, center = T, scale = T))))
 pred_maxnet <- predict(model, as.data.frame(scale(test, center = T, scale = T)), s = "lambda.min")
@@ -875,8 +875,10 @@ which(pred_maxnet>2)
 maxnet_coords_over1 <- background_all_toMl_shuffled[-c(1:130),1:3][which(pred_maxnet>1),1:3]
 maxnet_coords_over3 <- background_all_toMl_shuffled[-c(1:130),1:3][which(pred_maxnet>3),1:3]
 
+predicted_p_test <- rep(0, length(p_test))
+predicted_p_test[which(pred_maxnet>3)] <- 1
 
-confusionMatrix(pred_maxnet, p_test)
+confusionMatrix(predicted_p_test, p_test)
 
 library(caret)
 #common settings
