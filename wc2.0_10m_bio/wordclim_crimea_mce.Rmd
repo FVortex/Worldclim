@@ -1,0 +1,1336 @@
+---
+title: "Worldclim Crimea"
+author: "Mikhail Orlov"
+date: ''
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Clearance for the evironment}
+rm(list= ls())
+```
+
+#Machine learning techniques for worldclim and species distribution data analysis
+
+First to etract climate data from WorldClim.org tiles for several locations and make data table
+download and unzip all relevant WorldClim geoTIFF files into a single directory.
+
+```{r Preparing dataset and loading libraries, message=F, warning=F, results='hide'}
+
+setwd('/home/mikhail/Documents/lsh17/worldclim/wc2.0_10m_bio/')
+dir()#load packages: raster, rgdal, foreach
+library(rgdal)
+library(raster)
+library(foreach)
+library(maps)
+library(maxnet)
+library(caret)
+library(FactoMineR)
+library(factoextra)
+library(cluster)
+
+library(ggplot2)
+library(plsRglm)
+```
+Read names of all files in directory into a list (from http://stackoverflow.com/questions/5319839/read-multiple-csv-files-into-separate-data-frames)
+
+```{r Reading tifs, message=F, warning=F, results='hide'}
+
+filenames <- list.files(path="~/data_directory/")
+filenames <- grep('*.tif', list.files(), value = T)
+
+#Load all geoTIFF files
+for(i in filenames){
+  #filepath <- file.path("~/data_directory/",i)
+  filepath <- file.path(i)
+  assign(i, raster(filepath))
+}
+
+#check that all files loaded properly by raster
+#from http://stackoverflow.com/questions/15387727/use-object-names-as-list-names-in-r
+list <- mget(filenames, envir=globalenv())
+
+for(i in list){
+  if (hasValues(i)==FALSE){
+    print(i,"hasValues error")
+  }
+  if (inMemory(i)==TRUE){
+    print(i, "inMemory error")
+  }
+  else{
+    print("All checked out!")
+  }
+}
+```
+
+To determine region of interest using map and generating sequences of coordinates
+```{r Region selection, message=F, warning=F, results='hide'}
+
+crimea <- map(ylim=c(44.3, 46), xlim=c(32.5,36.6), col='gray90', fill=TRUE)  
+
+crimea_x_lims <- c(32.5, 36.6) 
+crimea_y_lims <- c(44.4, 46)
+
+abline(v = crimea_x_lims)
+abline(h = crimea_y_lims)
+
+#  # load table of latitude and longitude for locations of interest
+
+Latitude <- seq(from = crimea_y_lims[1], to = crimea_y_lims[2], by = 0.125)
+Longitude <- seq(from = crimea_x_lims[1], to = crimea_x_lims[2], by = 0.125)
+lat_long<- expand.grid(Latitude = Latitude, Longitude = Longitude)
+Pop <- as.factor(1:nrow(lat_long))
+pop <- cbind(lat_long, Pop)
+row.names(pop) <- pop$Pop
+```
+
+NOTE: WorldClim data, even at highest res, is averaged over 1 km2.
+If your location is too close to a coast (i.e. less than 1 km2),
+there will not be any information (nothing but NAs) in this data set.
+
+Loading ready dataset for background points with resolution of 0.125 
+
+```{r Loading background data, message=F, warning=F, results='hide'}
+
+load('/home/mikhail/Documents/lsh17/worldclim/clim_complete_crimea_0125grid.rda')
+#load location coordinates as SpatialPoints
+for(i in pop$Pop){
+  assign(i,SpatialPoints(as.matrix(t(c(pop[i,2], pop[i,1])))))
+}
+
+#check that SpatialPoints load correctly from geoTIFFs
+poplist <- mget(levels(pop$Pop), envir=globalenv())
+
+tiffvector <- unlist(list)
+
+#Optional quality check step. For smaller datasets, will tell you which population locations should be adjusted,
+#in other words, which rows are all NA. See Note above, line 51. Or check after extracting data, see line 
+#foreach(p=poplist, .combine='rbind') %:%
+ # foreach(t=tiffvector, .combine='cbind') %do%{
+  #  is.na(extract(t,p))
+  #} #may take a while
+
+#make climate data table
+# #
+
+#climate <- foreach(p=poplist, .combine='rbind') %:%
+ #foreach(t=tiffvector, .combine='cbind') %do%{
+  #myValue<-extract(t, p)
+  #} #may take a while
+
+#tidy table
+popnames <- sort(as.character(pop$Pop))
+####clim <- as.data.frame(climate, row.names=popnames)
+####colnames(clim) <- filenames
+##save(clim, file = '/home/mikhail/Documents/lsh17/worldclim/clim_complete_crimea_0125grid.rda')
+#To check for populations that need to be adjusted/rows that are all NAs (See note, line 51)
+#find rows that are all NAs, these are likely populations too close to large bodies of water
+movepops <- clim[rowSums(is.na(clim)) == ncol(clim),]
+
+
+# checking data length
+unique(lapply(clim, length))
+
+# converting into proper dimensions
+res <- c()
+for (i in clim) {
+  res <- cbind(res, i)
+}
+
+rownames(res) <- as.numeric(popnames)
+
+#pop_reordered <- c()
+#for (i in (rownames(res))) {
+ # pop_reordered <- rbind(pop_reordered, pop[as.numeric(i),])
+#}
+
+res <- cbind(pop, res) # not pop_reordered
+
+colnames(res)[4:22] <- names(clim)
+```
+
+
+```{r Sample plots to see whether the data are ok, message=F, warning=F, results='hide'}
+
+vectocol <- (min(sort(unique(na.omit(res[,17])))):max(sort(unique(na.omit(res[,17])))))
+library(ggplot2)
+#res <- as.data.frame(res)
+ggplot(data = res, mapping = aes(x = res[,2], y = res[,1], lwd = res[,10], alpha = res[,6], color = res[,9]))+geom_point()
+```
+
+
+
+Bioclimatic variables names
+```{r Variables names, message=F, warning=F, results='hide'}
+
+raw <- 'BIO1 = Annual Mean Temperature, BIO2 = Mean Diurnal Range (Mean of monthly (max temp - min temp)), BIO3 = Isothermality (BIO2/BIO7) (* 100), BIO4 = Temperature Seasonality (standard deviation *100), BIO5 = Max Temperature of Warmest Month, BIO6 = Min Temperature of Coldest Month, BIO7 = Temperature Annual Range (BIO5-BIO6), BIO8 = Mean Temperature of Wettest Quarter, BIO9 = Mean Temperature of Driest Quarter, BIO10 = Mean Temperature of Warmest Quarter, BIO11 = Mean Temperature of Coldest Quarter, BIO12 = Annual Precipitation, BIO13 = Precipitation of Wettest Month, BIO14 = Precipitation of Driest Month, BIO15 = Precipitation Seasonality (Coefficient of Variation), BIO16 = Precipitation of Wettest Quarter, BIO17 = Precipitation of Driest Quarter, BIO18 = Precipitation of Warmest Quarter, BIO19 = Precipitation of Coldest Quarter'
+#raw1 <- gsub('BIO.*? = ', '', raw)
+bioclim_vars <- unlist(strsplit(raw, split = ', '))
+bioclim_vars <- substr(bioclim_vars, start = 8, 100)
+
+names(res)[4:22] <- bioclim_vars
+
+#removing missing values
+res_no_nas <- res[complete.cases(res),]
+
+colnames(res_no_nas) <- bioclim_vars
+```
+
+```{r clusterization, message=F, warning=F, results='hide'}
+
+
+
+crimea_x_lims <- c(32.5, 36.6) 
+crimea_y_lims <- c(44.4, 46)
+
+ #res_no_nas <- res_no_nas[which(res_no_nas$Latitude<46),]
+#res_no_nas_matrix <- scale(as.matrix(res_no_nas))
+res_no_nas_scaled <- scale(res_no_nas[,-c(1:3)], center = T, scale = T)
+hclusted <- hclust(dist(res_no_nas_scaled), method = 'ward.D2')
+
+#dendrogram to establish a number of cluster
+#plot(hclusted)
+#number is chosen to be 5
+cut_hclusted <- cutree(hclusted, k = 5)
+
+
+# three clustering methods and various cluster number
+#svg('/home/mikhail/Documents/lsh17/worldclim/3_methods_clustering_2_10_clusters.svg', height = 8, width = 24)
+lwd= 4
+pch = 22
+par(mfrow = c(3,9),
+    mar = rep(.7,4))
+for (i in 2:10){
+    tmp <- cutree(hclusted, k = i)
+    plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, col = (1:length(unique(tmp)))[tmp], asp = 1, pch = pch, lwd = lwd, main = paste0(i,' clusters (Ward method)'), ylim = crimea_y_lims, xlim = crimea_x_lims)
+    lines(x = crimea$x, y = crimea$y)
+}
+for (i in 2:10){
+  tmp <- kmeans(res_no_nas_scaled, i)$cluster
+  plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, col = rainbow(length(unique(tmp)))[tmp], asp = 1, pch = 12, lwd = lwd, main = paste0(i,' clusters (k-means method)'), ylim = crimea_y_lims, xlim = crimea_x_lims)
+  lines(x = crimea$x, y = crimea$y)
+}
+for (i in 2:10){
+  tmp <- pam(res_no_nas_scaled, i)$cluster
+  plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, col = rainbow(i)[tmp], asp = 1, pch = 12, lwd = lwd, main = paste0(i,' clusters (PAM method)'), ylim = crimea_y_lims, xlim = crimea_x_lims)
+  lines(x = crimea$x, y = crimea$y)
+} 
+
+print(str(tmp))
+
+par(mfrow = c(1,1))
+ plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, col = rainbow(i)[tmp], asp = 1, pch = 12, lwd = lwd, main = paste0(i,' clusters (PAM method)'), ylim = crimea_y_lims, xlim = crimea_x_lims)
+ points(x = res_no_nas$Longitude, y = res_no_nas$Latitude, col = rainbow(i)[tmp], pch = 3, lwd = 22)
+  points(x = res_no_nas$Longitude, y = res_no_nas$Latitude, col = rainbow(i)[tmp], pch = 8, lwd = 22)
+
+ lines(x = crimea$x, y = crimea$y)
+ 
+
+#dev.off()
+```
+
+Principal component analysis
+Compute PCA in R using prcomp()
+#Visualize eigenvalues (scree plot). Show the percentage of variances explained by each principal component.
+```{r PCA, eval=T, message=F, warning=F, results='hide'}
+
+res.pca <- prcomp(res_no_nas[,-c(1:3)], scale = TRUE)
+
+#Visualize eigenvalues (scree plot). Show the percentage of variances explained by each principal component.
+
+fviz_eig(res.pca)
+#abline(h = 12)
+summary(res.pca)
+
+
+library(corrplot)
+bioclim_variables_for_all_background <- res_no_nas[,-c(1:3)]
+names(bioclim_variables_for_all_background) <- paste('BIO', seq_along(names(bioclim_variables_for_all_background)))
+corrplot::corrplot(cor(bioclim_variables_for_all_background, method = 'p'))
+
+res1 <- cor.mtest(bioclim_variables_for_all_background, conf.level = .95)
+
+
+## specialized the insignificant value according to the significant level
+M <- res1$uppCI
+colnames(M) <- names(bioclim_variables_for_all_background) -> rownames(M)
+corrplot(M, p.mat = res1$p, sig.level = .01)
+```
+
+
+#Biplot of individuals and variables
+```{r}
+library(factoextra)
+res.pca <- prcomp(bioclim_variables_for_all_background, scale = TRUE)
+
+fviz_pca_biplot(res.pca, label = "var",# habillage=cut_hclusted,
+               addEllipses=F, 
+               repel = T,
+               col.var = 'contrib',
+               gradient.cols = c("white", "blue", "red")
+               #ggtheme = theme_minimal()
+               )
+
+#autoplot(res.pca, col = cut_hclusted, loadings = TRUE, loadings.label = TRUE, loadings.label.size = 3)
+par(oma = rep(0.5,4))
+biplot(res.pca)
+```
+
+
+#Supervised machine learning part
+
+##Number on samples for different species
+Preparing data
+```{r Data for prediction models, message=F, warning=F, results='hide'}
+
+species <- readxl::read_xlsx('/home/mikhail/Documents/lsh17/species-points_final_update.xlsx')[,1:3]
+par (mar = c(15,3,2,2))
+barplot(sort(table(species$Species), decreasing = T)[1:20], las = 2)
+P.tragium <- species[which(species$Species=='Pimpinella tragium Vill.'),]
+#smaller clim for P.tragium
+
+P.tragium_lat_long<- as.data.frame(cbind(as.numeric(P.tragium$Latitude), as.numeric(P.tragium$Longitude)))
+P.tragium_Pop <- as.factor(1:nrow(P.tragium_lat_long))
+P.tragium_pop <- cbind((P.tragium_lat_long), P.tragium_Pop)
+colnames(P.tragium_pop)[1:2] <- c('Latitude', 'Longitude')
+row.names(P.tragium_pop) <- P.tragium_pop$P.tragium_Pop
+
+#load location coordinates as SpatialPoints
+for(i in P.tragium_pop$P.tragium_Pop){
+  assign(i,SpatialPoints(as.matrix(t(c(P.tragium_pop[i,2], P.tragium_pop[i,1])))))
+}
+
+#check that SpatialPoints load correctly from geoTIFFs
+P.tragium_poplist <- mget(levels(P.tragium_pop$P.tragium_Pop), envir=globalenv())
+
+
+tiffvector <- unlist(list)
+
+
+load('/home/mikhail/Documents/lsh17/worldclim/P.tragium_climate.rda')
+P.tragium_popnames <- sort(as.character(P.tragium_pop$P.tragium_Pop))
+P.tragium_clim <- as.data.frame(P.tragium_climate, row.names=P.tragium_popnames)
+colnames(P.tragium_clim) <- filenames
+
+#converting into proper dimensions
+P.tragium_res <- c()
+for (i in P.tragium_clim) {
+  P.tragium_res <- cbind(P.tragium_res, i)
+}
+
+rownames(P.tragium_res) <- as.numeric(P.tragium_popnames)
+
+P.tragium_res <- cbind(P.tragium_pop, P.tragium_res) # not pop_reordered
+
+colnames(P.tragium_res)[4:22] <- names(P.tragium_clim)
+```
+
+```{r P. tragium distribution, message=F, warning=F, results='hide'}
+
+plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
+points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = 16, lwd = 2)
+```
+
+Fisrt prediction model is maxnet - maxent over glmnet
+
+```{r Maxnet, message=F, warning=F, results='hide'}
+#removing names that would interfere with trainig
+colnames(P.tragium_res) <- NULL -> colnames(P.tragium_res)
+rownames(res_no_nas) <- NULL -> colnames(res_no_nas)
+
+#P.tragium_climate_no_nas <- P.tragium_climate[complete.cases(P.tragium_climate),] #1 NA!
+    
+P.tragium_variables <- (P.tragium_res[1:131,4:23])#!
+P.tragium_coords <- (P.tragium_res[1:131,1:2])
+
+
+set.seed(999)
+
+rand_inds_background <- sample(nrow(res_no_nas), nrow(res_no_nas))
+background_all_250_shuffled <-  res_no_nas[rand_inds_background, ] 
+
+background_130points_variables <- unname(as.matrix(background_all_250_shuffled[1:130,4:22]))
+background_130points_coords <- as.matrix(background_all_250_shuffled[1:130,1:2])
+
+background_rest_120points_variables <- as.matrix(background_all_250_shuffled[-c(1:130),4:22])
+background_rest_120points_coords <- as.matrix(background_all_250_shuffled[-c(1:130),1:2])
+
+#tragium <- rbind(P.tragium_all_points, background_130points)
+#p <- c(rep(1, nrow(P.tragium_all_points)), rep(0, nrow(background_130points)))
+
+#for testing 
+
+#uniform input data
+
+num_to_testing <- 106
+P.tragium_first_106points_coords <- unname(as.matrix(P.tragium_coords[1:num_to_testing,]))
+
+P.tragium_first_106points <- unname(as.matrix(P.tragium_variables[1:num_to_testing,]))
+P.tragium_rest_25points <- as.matrix(P.tragium_variables[-c(1:num_to_testing),])
+
+P.tragium_first_106points_coords <- unname(as.matrix(P.tragium_coords[1:num_to_testing,]))
+P.tragium_rest_25points_coords <- as.matrix(P.tragium_coords[-c(1:num_to_testing),])
+
+
+colnames(background_130points_variables) <- colnames(P.tragium_first_106points)
+
+p_train <- c(rep(0, nrow(background_130points_variables)), rep(1, nrow(P.tragium_first_106points)))
+p_test <- c(rep(0, nrow(background_rest_120points_coords)), rep(1, nrow(P.tragium_rest_25points)))
+
+training <- ((rbind(background_130points_variables, P.tragium_first_106points)))
+testing <- ((rbind(as.matrix(background_rest_120points_variables), P.tragium_rest_25points)))
+testing_coords <-  as.matrix(unname(rbind(as.matrix(background_rest_120points_coords), P.tragium_rest_25points_coords)))
+
+
+colnames(training) <- colnames(P.tragium_rest_25points)
+scaled_training <- as.data.frame(scale(training, center = T, scale = T))
+colnames(scaled_training) <- names(P.tragium_clim)
+
+#NA embedded
+
+which(!complete.cases(training))
+
+df_training <- as.data.frame(scale(training[complete.cases(training),], center = T, scale = T))
+colnames(df_training) <- names(P.tragium_clim)
+
+p_train_nonas <- p_train[-which(!complete.cases(training))]
+testing_coords_nonas <- testing_coords[-which(!complete.cases(training)),]
+
+df_testing <- as.data.frame(scale(testing[complete.cases(testing),], center = T, scale = T))
+colnames(df_testing) <- names(P.tragium_clim)
+##rownames(training) <- 1:nrow(training)
+##colnames(training) <- colnames(res_no_nas)
+
+model <- maxnet(p = p_train_nonas, data = df_training,  maxnet.formula(p_train_nonas, df_training))
+#plot(model, type="cloglog")
+
+pred_maxnet <- predict(model, as.data.frame(scale(df_testing, center = T, scale = T)), s = "lambda.min")
+
+
+#getting coordinates for prediction
+#maxnet_coords_over05 <- res_no_nas[-c(1:130),1:3][which(pred_maxnet>0.5),1:3]
+
+#setting cutoff value
+
+cutoff <- -1
+maxnet_coords_over05 <- as.data.frame(testing_coords_nonas[which(pred_maxnet> cutoff),])
+colnames(maxnet_coords_over05) <- colnames(res)[1:2]
+maxnet_coords_over3 <- testing_coords_nonas[which(pred_maxnet>cutoff),]
+
+predicted_p_test <- rep(0, length(p_test))
+predicted_p_test[which(pred_maxnet> cutoff)] <- 1
+
+confusionMatrix(predicted_p_test, p_test)
+maxnet_cm_accuracy <- confusionMatrix(predicted_p_test, p_test)$overall['Accuracy']
+maxnet_cm_sensitivity <- confusionMatrix(predicted_p_test, p_test)$byClass['Sensitivity']
+maxnet_cm_specificity <- confusionMatrix(predicted_p_test, p_test)$byClass['Specificity']
+```
+
+Other models using caret libraries
+
+```{r caret, message=F, warning=F, results='hide'}
+
+#common settings
+rownames(df_training)# <- seq_along(rownames(training))
+training$Class <- as.factor(p_train)
+df_trainingClass <- df_training
+df_trainingClass$Class <- as.factor(p_train_nonas)
+
+fitControl <- trainControl(## 10-fold CV
+  method = "repeatedcv",
+  number = 10,
+  ## repeated ten times
+  repeats = 10,
+#  savePredictions = T,
+  ## Estimate class probabilities
+ # classProbs = TRUE
+  ## Evaluate performance using 
+  ## the following function
+  #summaryFunction = twoClassSummary
+  )
+#caret train in a loop
+
+methods_to_loop <- c('plsRglm', 'LogitBoost','gbm', 'mlpML', 'nb', 'rf', 'svmRadial')
+
+accuracies <- c()
+mean_accuracies <- c()
+
+cm_accuracies <- c()
+cm_sensitivities <- c()
+cm_specificities <- c()
+
+predicted_ps <- predicted_p_test #maxnet ps are ready
+for (i in methods_to_loop){
+  set.seed(825)
+  tmpFit1 <- caret::train(Class ~ ., data = df_trainingClass, #removing metadata columns, but no class column
+                        method = i, 
+                        trControl = fitControl,
+  #                      metric = 'ROC',
+                        ## This last option is actually one
+                        ## for gbm() that passes through
+                        verbose = FALSE,
+                        preProcess = c('center','scale')
+  )
+  #gbmFit1
+  print(paste0(i, tmpFit1$results$Accuracy))
+  accuracies <- c(accuracies, paste0(tmpFit1$results$Accuracy, collapse = ', '))
+  mean_accuracies <- c(mean_accuracies, mean(tmpFit1$results$Accuracy))
+  assign(paste0(i, 'Fit'), tmpFit1)
+  tmp2 <- predict(tmpFit1, newdata = df_testing)
+  predicted_ps <- cbind(predicted_ps, as.character(tmp2))
+  #dummy <- matrix(NA, nrow(P.tragium_rest_25points), ncol = 2)
+  tmp3  <- testing_coords[which(tmp2 ==1),]
+
+  assign(paste0('predicted_coord_', i), tmp3)
+  
+  
+  #accuracies using confusion matrix
+  cm_accuracies <- c(cm_accuracies, confusionMatrix(tmp2, reference = p_test)$overall['Accuracy'])
+  cm_sensitivities <- c(cm_sensitivities, confusionMatrix(tmp2, reference = p_test)$byClass['Sensitivity'])
+  cm_specificities <- c(cm_specificities, confusionMatrix(tmp2, reference = p_test)$byClass['Specificity'])
+}
+```
+
+##Plotting results - predictions of distribution 
+```{r Prediction plots, message=F, warning=F, results='hide'}
+
+#par(mfrow = c(10,1),    mar = rep(1.5,4))
+#svg('/home/mikhail/Documents/lsh17/maxent_p.tragium_several_ps.svg', width = 8, height = 8)
+#svg('/home/mikhail/Documents/lsh17/maxent_p.tragium_p_1.svg', width = 8, height = 8)
+lwd = 9
+pch = 22
+alpha = 15
+
+plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Maxent')
+points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
+#points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=0.15),  pch = pch, lwd = lwd)
+points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+#points(x = maxnet_coords_over2$Longitude, y = maxnet_coords_over2$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+#dev.off()
+
+#care methods plotting in loop
+
+#caret_methods <- grep('predicted_coord_', x = ls(), value = T)
+caret_preds_coords <- grep('predicted_coord_', x = ls(), value = T)
+
+colnames(res_no_nas) <- colnames(res)
+for (i in caret_preds_coords){
+  plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = (gsub(pattern = 'predicted_coord_*', replacement = '', gsub(pattern = '*Fit1', replacement = '', i))))
+  lines(x = crimea$x, y = crimea$y)
+  points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
+  #plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
+  points(x = get(i)[,2], y = get(i)[,1], col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+  #dev.off()
+}
+
+plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, xaxt = 'n', yaxt = 'n', ylab = '', xlab='', bty = 'n', main = '')
+legend('center', legend = c('Samples collected', 'Prediction'),  fill = c(1,2), bty = 'n')
+```
+
+
+##Model performance comparison
+```{r}
+
+#ones based on confusion matrices
+
+par(mfrow = c(1,3),    
+    oma = c(5,2,2,2))
+ylim = c(0, 0.85)
+barplot(c(maxnet_cm_accuracy, cm_accuracies), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Accuracy values', ylim = ylim)
+barplot(c(maxnet_cm_sensitivity, cm_sensitivities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Sensitivity values', ylim = ylim)
+barplot(c(maxnet_cm_specificity, cm_specificities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Specificity values', ylim = ylim)
+
+```
+
+```{r How similar different models are? based on prediction vectors}
+
+
+
+predicted_ps_and_true <- cbind(predicted_ps, as.character(p_test))
+
+colnames(predicted_ps_and_true) <- c('maxnet', methods_to_loop, 'TRUE')
+hclust_predicted_ps <- hclust(dist(t(predicted_ps_and_true)))
+
+plot(hclust_predicted_ps)
+
+#methods_to_loop_rearranged <- methods_to_loop[c(5, 2, 1, 8, 4, 3, 7)]
+
+#methods_to_dendro <-  append(methods_to_loop_rearranged, 'maxnet', after=2)
+
+methods_to_dendro <- list(predicted_coord_LogitBoost, maxnet_coords_over05, predicted_coord_plsRglm, predicted_coord_svmRadial, predicted_coord_mlpML, predicted_coord_gbm, predicted_coord_rf, predicted_coord_nb, testing_coords)
+
+par(mfrow = c (1,9))
+lwd <- 2
+for (i in methods_to_dendro){
+  tmp <- as.data.frame(i)
+  colnames(tmp) <- c('Longitude', 'Latitude')
+  #plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = '')
+  #lines(x = crimea$x, y = crimea$y)
+  
+  plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = '')
+  points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
+  points(x = (tmp)[,2], y = (tmp)[,1], col = 2,  pch = pch, lwd = lwd)
+  #dev.off()
+}
+
+#plotting gendrogram and corresponding prediction on map together
+
+layout(matrix(rbind(rep(1,9),rep(1,9), rep(1,9), 2:10), nrow = 4))
+par(mar = rep(2.5,4))
+plot(hclust_predicted_ps, hang = -1, cex= 3, cex.main = 3, main = 'Model comparison based on prediction similarity')
+
+#par(mfrow = c (1,8))
+lwd <- 2
+for (i in methods_to_dendro){
+  tmp <- as.data.frame(i)
+  colnames(tmp) <- c('Longitude', 'Latitude')
+  #plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = '')
+  #lines(x = crimea$x, y = crimea$y)
+  
+  plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = '')
+  points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
+  points(x = (tmp)[,2], y = (tmp)[,1], col = 2,  pch = pch, lwd = lwd)
+  #dev.off()
+}
+
+
+predicted_ps_numeric <- apply(predicted_ps_and_true, 2, as.numeric)
+
+cor(predicted_ps_numeric)
+
+library(corrplot)
+
+corrplot(cor(predicted_ps_numeric), tl.cex = 2)
+
+cmt <- cor.mtest(predicted_ps_numeric)
+
+corrplot(cmt$uppCI, p.mat = cmt$p, sig.level = 0.1)
+```
+
+#Supervised machine learning part
+
+##Number on samples for different species
+Preparing data
+```{r Data for prediction models, message=F, warning=F, results='hide'}
+
+species <- readxl::read_xlsx('/home/mikhail/Documents/lsh17/species-points_final_update.xlsx')[,1:3]
+par (mar = c(15,3,2,2))
+barplot(sort(table(species$Species), decreasing = T)[1:20], las = 2)
+Caucalis <- species[which(species$Species=='Caucalis platycarpos L.'),]
+
+
+Caucalis_lat_long<- as.data.frame(cbind(as.numeric(Caucalis$Latitude), as.numeric(Caucalis$Longitude)))
+Caucalis_Pop <- as.factor(1:nrow(Caucalis_lat_long))
+Caucalis_pop <- cbind((Caucalis_lat_long), Caucalis_Pop)
+colnames(Caucalis_pop)[1:2] <- c('Latitude', 'Longitude')
+
+###pop <- cbind(Latitude, Longitude, Pop)
+#pop <- read.table("pop.txt", header=T, sep="\t")
+#pop <- readLines('pop.txt')
+row.names(Caucalis_pop) <- Caucalis_pop$Caucalis_Pop
+#pop$Pop <- as.factor(pop$Pop)
+head(Caucalis_pop)
+####NOTE: WorldClim data, even at highest res, is averaged over 1 km2.
+#If your location is too close to a coast (i.e. less than 1 km2),
+#there will not be any information (nothing but NAs) in this data set.
+#Therefore, it may be necessary to approximate some locations by moving
+#them inland. I did this using Google Earth.
+
+#load location coordinates as SpatialPoints
+for(i in Caucalis_pop$Caucalis_Pop){
+  assign(i,SpatialPoints(as.matrix(t(c(Caucalis_pop[i,2], Caucalis_pop[i,1])))))
+}
+
+#check that SpatialPoints load correctly from geoTIFFs
+Caucalis_poplist <- mget(levels(Caucalis_pop$Caucalis_Pop), envir=globalenv())
+Caucalis_poplist <- mget(levels(Caucalis_pop$Caucalis_Pop), envir=globalenv())
+
+tiffvector <- unlist(list)
+
+#Optional quality check step. For smaller datasets, will tell you which population locations should be adjusted,
+#in other words, which rows are all NA. See Note above, line 51. Or check after extracting data, see line 
+#foreach(p=poplist, .combine='rbind') %:%
+# foreach(t=tiffvector, .combine='cbind') %do%{
+#  is.na(extract(t,p))
+#} #may take a while
+
+#make climate data table
+# #
+
+# #Caucalis_climate <- foreach(p=Caucalis_poplist, .combine='rbind') %:%
+  # #foreach(t=tiffvector, .combine='cbind') %do%{
+    # #myValue<-extract(t, p)
+  # #} #may take a while
+#save(Caucalis_climate, file = '/home/mikhail/Documents/lsh17/Caucalis_climate.rda')
+
+load(file = '/home/mikhail/Documents/lsh17/Caucalis_climate.rda')
+
+Caucalis_popnames <- sort(as.character(Caucalis_pop$Caucalis_Pop))
+Caucalis_clim <- as.data.frame(Caucalis_climate, row.names=Caucalis_popnames)
+colnames(Caucalis_clim) <- filenames
+
+#converting into proper dimensions
+Caucalis_res <- c()
+for (i in Caucalis_clim) {
+  Caucalis_res <- cbind(Caucalis_res, i)
+}
+
+rownames(Caucalis_res) <- as.numeric(Caucalis_popnames)
+
+Caucalis_res <- cbind(Caucalis_pop, Caucalis_res) # not pop_reordered
+
+colnames(Caucalis_res)[4:22] <- names(Caucalis_clim)
+```
+
+```{r P. tragium distribution, message=F, warning=F, results='hide'}
+
+plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
+points(x = Caucalis$Longitude, y = Caucalis$Latitude, col =1, pch = 16, lwd = 2)
+```
+
+Fisrt prediction model is maxnet - maxent over glmnet
+
+```{r Maxnet, message=F, warning=F, results='hide'}
+#removing names that would interfere with trainig
+colnames(Caucalis_res) <- NULL -> colnames(Caucalis_res)
+rownames(res_no_nas) <- NULL -> colnames(res_no_nas)
+
+#Caucalis_climate_no_nas <- Caucalis_climate[complete.cases(Caucalis_climate),] #1 NA!
+    
+Caucalis_variables <- (Caucalis_res[1:73,4:23])#!
+Caucalis_coords <- (Caucalis_res[1:73,1:2])
+
+
+set.seed(999)
+
+rand_inds_background <- sample(nrow(res_no_nas), nrow(res_no_nas))
+background_all_250_shuffled <-  res_no_nas[rand_inds_background, ] 
+
+background_130points_variables <- unname(as.matrix(background_all_250_shuffled[1:130,4:22]))
+background_130points_coords <- as.matrix(background_all_250_shuffled[1:130,1:2])
+
+background_rest_120points_variables <- as.matrix(background_all_250_shuffled[-c(1:130),4:22])
+background_rest_120points_coords <- as.matrix(background_all_250_shuffled[-c(1:130),1:2])
+
+#tragium <- rbind(Caucalis_all_points, background_130points)
+#p <- c(rep(1, nrow(Caucalis_all_points)), rep(0, nrow(background_130points)))
+
+#for testing 
+
+#uniform input data
+
+num_to_training <- 50
+Caucalis_first_106points_coords <- unname(as.matrix(Caucalis_coords[1:num_to_training,]))
+
+Caucalis_first_106points <- unname(as.matrix(Caucalis_variables[1:num_to_training,]))
+Caucalis_rest_25points <- as.matrix(Caucalis_variables[-c(1:num_to_training),])
+
+Caucalis_first_106points_coords <- unname(as.matrix(Caucalis_coords[1:num_to_training,]))
+Caucalis_rest_25points_coords <- as.matrix(Caucalis_coords[-c(1:num_to_training),])
+
+
+colnames(background_130points_variables) <- colnames(Caucalis_first_106points)
+
+p_train <- c(rep(0, nrow(background_130points_variables)), rep(1, nrow(Caucalis_first_106points)))
+p_test <- c(rep(0, nrow(background_rest_120points_coords)), rep(1, nrow(Caucalis_rest_25points)))
+
+training <- ((rbind(background_130points_variables, Caucalis_first_106points)))
+testing <- ((rbind(as.matrix(background_rest_120points_variables), Caucalis_rest_25points)))
+testing_coords <-  as.matrix(unname(rbind(as.matrix(background_rest_120points_coords), Caucalis_rest_25points_coords)))
+
+
+colnames(training) <- colnames(Caucalis_rest_25points)
+scaled_training <- as.data.frame(scale(training, center = T, scale = T))
+colnames(scaled_training) <- names(Caucalis_clim)
+
+#NA embedded
+
+which(!complete.cases(training))
+
+df_training <- as.data.frame(scale(training[complete.cases(training),], center = T, scale = T))
+colnames(df_training) <- names(Caucalis_clim)
+
+p_train_nonas <- p_train[-which(!complete.cases(training))]
+testing_coords_nonas <- testing_coords[-which(!complete.cases(training)),]
+
+df_testing <- as.data.frame(scale(testing[complete.cases(testing),], center = T, scale = T))
+colnames(df_testing) <- names(Caucalis_clim)
+##rownames(training) <- 1:nrow(training)
+##colnames(training) <- colnames(res_no_nas)
+
+model <- maxnet(p = p_train_nonas, data = df_training,  maxnet.formula(p_train_nonas, df_training))
+#plot(model, type="cloglog")
+
+pred_maxnet <- predict(model, as.data.frame(scale(df_testing, center = T, scale = T)), s = "lambda.min")
+
+
+#getting coordinates for prediction
+#maxnet_coords_over05 <- res_no_nas[-c(1:130),1:3][which(pred_maxnet>0.5),1:3]
+
+#setting cutoff value
+
+cutoff <- -4
+maxnet_coords_over05 <- as.data.frame(testing_coords_nonas[which(pred_maxnet> cutoff),])
+colnames(maxnet_coords_over05) <- colnames(res)[1:2]
+maxnet_coords_over3 <- testing_coords_nonas[which(pred_maxnet>cutoff),]
+
+predicted_p_test <- rep(0, length(p_test))
+predicted_p_test[which(pred_maxnet> cutoff)] <- 1
+
+confusionMatrix(predicted_p_test, p_test)
+maxnet_cm_accuracy <- confusionMatrix(predicted_p_test, p_test)$overall['Accuracy']
+maxnet_cm_sensitivity <- confusionMatrix(predicted_p_test, p_test)$byClass['Sensitivity']
+maxnet_cm_specificity <- confusionMatrix(predicted_p_test, p_test)$byClass['Specificity']
+```
+
+Other models using caret libraries
+
+```{r caret, message=F, warning=F, results='hide'}
+
+#common settings
+rownames(df_training)# <- seq_along(rownames(training))
+Class <- as.factor(p_train)
+df_trainingClass <- df_training
+df_trainingClass$Class <- as.factor(p_train_nonas)
+
+fitControl <- trainControl(## 10-fold CV
+  method = "repeatedcv",
+  number = 10,
+  ## repeated ten times
+  repeats = 10,
+#  savePredictions = T,
+  ## Estimate class probabilities
+ # classProbs = TRUE
+  ## Evaluate performance using 
+  ## the following function
+  #summaryFunction = twoClassSummary
+  )
+#caret train in a loop
+
+methods_to_loop <- c('plsRglm', 'LogitBoost','gbm', 'mlpML', 'nb', 'rf', 'svmRadial')
+
+accuracies <- c()
+mean_accuracies <- c()
+
+cm_accuracies <- c()
+cm_sensitivities <- c()
+cm_specificities <- c()
+
+predicted_ps <- predicted_p_test #maxnet ps are ready
+for (i in methods_to_loop){
+  set.seed(825)
+  tmpFit1 <- caret::train(Class ~ ., data = df_trainingClass, #removing metadata columns, but no class column
+                        method = i, 
+                        trControl = fitControl,
+  #                      metric = 'ROC',
+                        ## This last option is actually one
+                        ## for gbm() that passes through
+                        verbose = FALSE,
+                        preProcess = c('center','scale')
+  )
+  #gbmFit1
+  print(paste0(i, tmpFit1$results$Accuracy))
+  accuracies <- c(accuracies, paste0(tmpFit1$results$Accuracy, collapse = ', '))
+  mean_accuracies <- c(mean_accuracies, mean(tmpFit1$results$Accuracy))
+  assign(paste0(i, 'Fit'), tmpFit1)
+  tmp2 <- predict(tmpFit1, newdata = df_testing)
+  predicted_ps <- cbind(predicted_ps, as.character(tmp2))
+  #dummy <- matrix(NA, nrow(Caucalis_rest_25points), ncol = 2)
+  tmp3  <- testing_coords[which(tmp2 ==1),]
+
+  assign(paste0('predicted_coord_', i), tmp3)
+  
+  
+  #accuracies using confusion matrix
+  cm_accuracies <- c(cm_accuracies, confusionMatrix(tmp2, reference = p_test)$overall['Accuracy'])
+  cm_sensitivities <- c(cm_sensitivities, confusionMatrix(tmp2, reference = p_test)$byClass['Sensitivity'])
+  cm_specificities <- c(cm_specificities, confusionMatrix(tmp2, reference = p_test)$byClass['Specificity'])
+}
+```
+
+##Plotting results - predictions of distribution 
+```{r Prediction plots, message=F, warning=F, results='hide'}
+
+par(mfrow = c(3,3),    mar = rep(1.5,4))
+#svg('/home/mikhail/Documents/lsh17/maxent_Caucalis_several_ps.svg', width = 8, height = 8)
+#svg('/home/mikhail/Documents/lsh17/maxent_Caucalis_p_1.svg', width = 8, height = 8)
+lwd = 9
+pch = 22
+alpha = 15
+
+plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Maxent')
+points(x = Caucalis$Longitude, y = Caucalis$Latitude, col =1, pch = pch, lwd = lwd)
+#points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=0.15),  pch = pch, lwd = lwd)
+points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+#points(x = maxnet_coords_over2$Longitude, y = maxnet_coords_over2$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+#dev.off()
+
+#care methods plotting in loop
+
+#caret_methods <- grep('predicted_coord_', x = ls(), value = T)
+caret_preds_coords <- grep('predicted_coord_', x = ls(), value = T)
+
+colnames(res_no_nas) <- colnames(res)
+for (i in caret_preds_coords){
+  plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = (gsub(pattern = 'predicted_coord_*', replacement = '', gsub(pattern = '*Fit1', replacement = '', i))))
+  lines(x = crimea$x, y = crimea$y)
+  points(x = Caucalis$Longitude, y = Caucalis$Latitude, col =1, pch = pch, lwd = lwd)
+  #plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
+  points(x = get(i)[,2], y = get(i)[,1], col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+  #dev.off()
+}
+
+plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, xaxt = 'n', yaxt = 'n', ylab = '', xlab='', bty = 'n', main = '')
+legend('center', legend = c('Samples collected', 'Prediction'),  fill = c(1,2), bty = 'n')
+```
+
+
+##Model performance comparison
+```{r}
+
+#ones based on confusion matrices
+
+par(mfrow = c(1,3),    
+    oma = c(5,2,2,2))
+ylim = c(0, 0.95)
+barplot(c(maxnet_cm_accuracy, cm_accuracies), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Accuracy values', ylim = ylim)
+barplot(c(maxnet_cm_sensitivity, cm_sensitivities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Sensitivity values', ylim = ylim)
+barplot(c(maxnet_cm_specificity, cm_specificities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Specificity values', ylim = ylim)
+
+```
+
+```{r How similar different models are? based on prediction vectors}
+
+
+
+predicted_ps_and_true <- cbind(predicted_ps, as.character(p_test))
+
+colnames(predicted_ps_and_true) <- c('maxnet', methods_to_loop, 'TRUE')
+hclust_predicted_ps <- hclust(dist(t(predicted_ps_and_true)))
+
+plot(hclust_predicted_ps)
+
+#methods_to_loop_rearranged <- methods_to_loop[c(5, 2, 1, 8, 4, 3, 7)]
+
+#methods_to_dendro <-  append(methods_to_loop_rearranged, 'maxnet', after=2)
+
+methods_to_dendro <- list(predicted_coord_LogitBoost, maxnet_coords_over05, predicted_coord_plsRglm, predicted_coord_svmRadial, predicted_coord_mlpML, predicted_coord_gbm, predicted_coord_rf, predicted_coord_nb, testing_coords)
+
+par(mfrow = c (1,9))
+lwd <- 2
+for (i in methods_to_dendro){
+  tmp <- as.data.frame(i)
+  colnames(tmp) <- c('Longitude', 'Latitude')
+  #plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = '')
+  #lines(x = crimea$x, y = crimea$y)
+  
+  plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = '')
+  points(x = Caucalis$Longitude, y = Caucalis$Latitude, col =1, pch = pch, lwd = lwd)
+  points(x = (tmp)[,2], y = (tmp)[,1], col = 2,  pch = pch, lwd = lwd)
+  #dev.off()
+}
+
+#plotting gendrogram and corresponding prediction on map together
+
+layout(matrix(rbind(rep(1,9),rep(1,9), rep(1,9), 2:10), nrow = 4))
+par(mar = rep(2.5,4))
+plot(hclust_predicted_ps, hang = -1, cex= 3, cex.main = 3, main = 'Model comparison based on prediction similarity')
+
+#par(mfrow = c (1,8))
+lwd <- 2
+for (i in methods_to_dendro){
+  tmp <- as.data.frame(i)
+  colnames(tmp) <- c('Longitude', 'Latitude')
+  #plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = '')
+  #lines(x = crimea$x, y = crimea$y)
+  
+  plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = '')
+  points(x = Caucalis$Longitude, y = Caucalis$Latitude, col =1, pch = pch, lwd = lwd)
+  points(x = (tmp)[,2], y = (tmp)[,1], col = 2,  pch = pch, lwd = lwd)
+  #dev.off()
+}
+
+
+predicted_ps_numeric <- apply(predicted_ps_and_true, 2, as.numeric)
+
+cor(predicted_ps_numeric)
+
+library(corrplot)
+
+corrplot(cor(predicted_ps_numeric), tl.cex = 2)
+
+cmt <- cor.mtest(predicted_ps_numeric)
+
+corrplot(cmt$uppCI, p.mat = cmt$p, sig.level = 0.1)
+```
+
+
+
+#Supervised machine learning part
+
+##Number on samples for different species
+Preparing data
+```{r Data for prediction models, message=F, warning=F, results='hide'}
+
+species <- readxl::read_xlsx('/home/mikhail/Documents/lsh17/species-points_final_update.xlsx')[,1:3]
+par (mar = c(15,3,2,2))
+barplot(sort(table(species$Species), decreasing = T)[1:20], las = 2)
+Daucus <- species[which(species$Species=='Daucus carota L.'),]
+
+
+Daucus_lat_long<- as.data.frame(cbind(as.numeric(Daucus$Latitude), as.numeric(Daucus$Longitude)))
+Daucus_Pop <- as.factor(1:nrow(Daucus_lat_long))
+Daucus_pop <- cbind((Daucus_lat_long), Daucus_Pop)
+colnames(Daucus_pop)[1:2] <- c('Latitude', 'Longitude')
+
+###pop <- cbind(Latitude, Longitude, Pop)
+#pop <- read.table("pop.txt", header=T, sep="\t")
+#pop <- readLines('pop.txt')
+row.names(Daucus_pop) <- Daucus_pop$Daucus_Pop
+#pop$Pop <- as.factor(pop$Pop)
+head(Daucus_pop)
+####NOTE: WorldClim data, even at highest res, is averaged over 1 km2.
+#If your location is too close to a coast (i.e. less than 1 km2),
+#there will not be any information (nothing but NAs) in this data set.
+#Therefore, it may be necessary to approximate some locations by moving
+#them inland. I did this using Google Earth.
+
+#load location coordinates as SpatialPoints
+for(i in Daucus_pop$Daucus_Pop){
+  assign(i,SpatialPoints(as.matrix(t(c(Daucus_pop[i,2], Daucus_pop[i,1])))))
+}
+
+#check that SpatialPoints load correctly from geoTIFFs
+Daucus_poplist <- mget(levels(Daucus_pop$Daucus_Pop), envir=globalenv())
+Daucus_poplist <- mget(levels(Daucus_pop$Daucus_Pop), envir=globalenv())
+
+tiffvector <- unlist(list)
+
+#Optional quality check step. For smaller datasets, will tell you which population locations should be adjusted,
+#in other words, which rows are all NA. See Note above, line 51. Or check after extracting data, see line 
+#foreach(p=poplist, .combine='rbind') %:%
+# foreach(t=tiffvector, .combine='cbind') %do%{
+#  is.na(extract(t,p))
+#} #may take a while
+
+#make climate data table
+# #
+
+# #
+Daucus_climate <- foreach(p=Daucus_poplist, .combine='rbind') %:%
+  # #
+  foreach(t=tiffvector, .combine='cbind') %do%{
+    # #
+    myValue<-extract(t, p)
+  # #
+    } #may take a while
+save(Daucus_climate, file = '/home/mikhail/Documents/lsh17/Daucus_climate.rda')
+
+load(file = '/home/mikhail/Documents/lsh17/Daucus_climate.rda')
+
+Daucus_popnames <- sort(as.character(Daucus_pop$Daucus_Pop))
+Daucus_clim <- as.data.frame(Daucus_climate, row.names=Daucus_popnames)
+colnames(Daucus_clim) <- filenames
+
+#converting into proper dimensions
+Daucus_res <- c()
+for (i in Daucus_clim) {
+  Daucus_res <- cbind(Daucus_res, i)
+}
+
+rownames(Daucus_res) <- as.numeric(Daucus_popnames)
+
+Daucus_res <- cbind(Daucus_pop, Daucus_res) # not pop_reordered
+
+colnames(Daucus_res)[4:22] <- names(Daucus_clim)
+```
+
+```{r P. tragium distribution, message=F, warning=F, results='hide'}
+
+plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
+points(x = Daucus$Longitude, y = Daucus$Latitude, col =1, pch = 16, lwd = 2)
+```
+
+Fisrt prediction model is maxnet - maxent over glmnet
+
+```{r Maxnet, message=F, warning=F, results='hide'}
+#removing names that would interfere with trainig
+colnames(Daucus_res) <- NULL -> colnames(Daucus_res)
+rownames(res_no_nas) <- NULL -> colnames(res_no_nas)
+
+#Daucus_climate_no_nas <- Daucus_climate[complete.cases(Daucus_climate),] #1 NA!
+    
+Daucus_variables <- (Daucus_res[1:70,4:23])#!
+Daucus_coords <- (Daucus_res[1:70,1:2])
+
+
+set.seed(999)
+
+rand_inds_background <- sample(nrow(res_no_nas), nrow(res_no_nas))
+background_all_250_shuffled <-  res_no_nas[rand_inds_background, ] 
+
+background_130points_variables <- unname(as.matrix(background_all_250_shuffled[1:130,4:22]))
+background_130points_coords <- as.matrix(background_all_250_shuffled[1:130,1:2])
+
+background_rest_120points_variables <- as.matrix(background_all_250_shuffled[-c(1:130),4:22])
+background_rest_120points_coords <- as.matrix(background_all_250_shuffled[-c(1:130),1:2])
+
+#tragium <- rbind(Daucus_all_points, background_130points)
+#p <- c(rep(1, nrow(Daucus_all_points)), rep(0, nrow(background_130points)))
+
+#for testing 
+
+#uniform input data
+
+num_to_training <- 50
+Daucus_first_106points_coords <- unname(as.matrix(Daucus_coords[1:num_to_training,]))
+
+Daucus_first_106points <- unname(as.matrix(Daucus_variables[1:num_to_training,]))
+Daucus_rest_25points <- as.matrix(Daucus_variables[-c(1:num_to_training),])
+
+Daucus_first_106points_coords <- unname(as.matrix(Daucus_coords[1:num_to_training,]))
+Daucus_rest_25points_coords <- as.matrix(Daucus_coords[-c(1:num_to_training),])
+
+
+colnames(background_130points_variables) <- colnames(Daucus_first_106points)
+
+p_train <- c(rep(0, nrow(background_130points_variables)), rep(1, nrow(Daucus_first_106points)))
+p_test <- c(rep(0, nrow(background_rest_120points_coords)), rep(1, nrow(Daucus_rest_25points)))
+
+training <- ((rbind(background_130points_variables, Daucus_first_106points)))
+testing <- ((rbind(as.matrix(background_rest_120points_variables), Daucus_rest_25points)))
+testing_coords <-  as.matrix(unname(rbind(as.matrix(background_rest_120points_coords), Daucus_rest_25points_coords)))
+
+
+colnames(training) <- colnames(Daucus_rest_25points)
+scaled_training <- as.data.frame(scale(training, center = T, scale = T))
+colnames(scaled_training) <- names(Daucus_clim)
+
+#NA embedded
+
+which(complete.cases(training))
+
+df_training <- as.data.frame(scale(training[complete.cases(training),], center = T, scale = T))
+colnames(df_training) <- names(Daucus_clim)
+
+p_train_nonas <- p_train#[-which(!complete.cases(training))]
+testing_coords_nonas <- testing_coords[which(complete.cases(training)),]
+
+colnames(testing) <- names(Daucus_clim)
+df_testing <- as.data.frame(scale(testing, center = T, scale = T))
+
+##rownames(training) <- 1:nrow(training)
+##colnames(training) <- colnames(res_no_nas)
+
+model <- maxnet(p = p_train_nonas, data = df_training,  maxnet.formula(p_train_nonas, df_training))
+#plot(model, type="cloglog")
+
+pred_maxnet <- predict(model, as.data.frame(scale(df_testing, center = T, scale = T)), s = "lambda.min")
+
+
+#getting coordinates for prediction
+#maxnet_coords_over05 <- res_no_nas[-c(1:130),1:3][which(pred_maxnet>0.5),1:3]
+
+#setting cutoff value
+
+cutoff <- -4
+maxnet_coords_over05 <- as.data.frame(testing_coords_nonas[which(pred_maxnet> cutoff),])
+colnames(maxnet_coords_over05) <- colnames(res)[1:2]
+maxnet_coords_over3 <- testing_coords_nonas[which(pred_maxnet>cutoff),]
+
+predicted_p_test <- rep(0, length(p_test))
+predicted_p_test[which(pred_maxnet> cutoff)] <- 1
+
+confusionMatrix(predicted_p_test, p_test)
+maxnet_cm_accuracy <- confusionMatrix(predicted_p_test, p_test)$overall['Accuracy']
+maxnet_cm_sensitivity <- confusionMatrix(predicted_p_test, p_test)$byClass['Sensitivity']
+maxnet_cm_specificity <- confusionMatrix(predicted_p_test, p_test)$byClass['Specificity']
+```
+
+Other models using caret libraries
+
+```{r caret, message=F, warning=F, results='hide'}
+
+#common settings
+rownames(df_training)# <- seq_along(rownames(training))
+Class <- as.factor(p_train)
+df_trainingClass <- df_training
+df_trainingClass$Class <- as.factor(p_train_nonas)
+
+fitControl <- trainControl(## 10-fold CV
+  method = "repeatedcv",
+  number = 10,
+  ## repeated ten times
+  repeats = 10,
+#  savePredictions = T,
+  ## Estimate class probabilities
+ # classProbs = TRUE
+  ## Evaluate performance using 
+  ## the following function
+  #summaryFunction = twoClassSummary
+  )
+#caret train in a loop
+
+methods_to_loop <- c('plsRglm', 'LogitBoost','gbm', 'mlpML', 'nb', 'rf', 'svmRadial')
+
+accuracies <- c()
+mean_accuracies <- c()
+
+cm_accuracies <- c()
+cm_sensitivities <- c()
+cm_specificities <- c()
+
+predicted_ps <- predicted_p_test #maxnet ps are ready
+for (i in methods_to_loop){
+  set.seed(825)
+  tmpFit1 <- caret::train(Class ~ ., data = df_trainingClass, #removing metadata columns, but no class column
+                        method = i, 
+                        trControl = fitControl,
+  #                      metric = 'ROC',
+                        ## This last option is actually one
+                        ## for gbm() that passes through
+                        verbose = FALSE,
+                        preProcess = c('center','scale')
+  )
+  #gbmFit1
+  print(paste0(i, tmpFit1$results$Accuracy))
+  accuracies <- c(accuracies, paste0(tmpFit1$results$Accuracy, collapse = ', '))
+  mean_accuracies <- c(mean_accuracies, mean(tmpFit1$results$Accuracy))
+  assign(paste0(i, 'Fit'), tmpFit1)
+  tmp2 <- predict(tmpFit1, newdata = df_testing)
+  predicted_ps <- cbind(predicted_ps, as.character(tmp2))
+  #dummy <- matrix(NA, nrow(Daucus_rest_25points), ncol = 2)
+  tmp3  <- testing_coords[which(tmp2 ==1),]
+
+  assign(paste0('predicted_coord_', i), tmp3)
+  
+  
+  #accuracies using confusion matrix
+  cm_accuracies <- c(cm_accuracies, confusionMatrix(tmp2, reference = p_test)$overall['Accuracy'])
+  cm_sensitivities <- c(cm_sensitivities, confusionMatrix(tmp2, reference = p_test)$byClass['Sensitivity'])
+  cm_specificities <- c(cm_specificities, confusionMatrix(tmp2, reference = p_test)$byClass['Specificity'])
+}
+```
+
+##Plotting results - predictions of distribution 
+```{r Prediction plots, message=F, warning=F, results='hide'}
+
+par(mfrow = c(3,3),    mar = rep(1.5,4))
+#svg('/home/mikhail/Documents/lsh17/maxent_Daucus_several_ps.svg', width = 8, height = 8)
+#svg('/home/mikhail/Documents/lsh17/maxent_Daucus_p_1.svg', width = 8, height = 8)
+lwd = 9
+pch = 22
+alpha = 15
+
+plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Maxent')
+points(x = Daucus$Longitude, y = Daucus$Latitude, col =1, pch = pch, lwd = lwd)
+#points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=0.15),  pch = pch, lwd = lwd)
+points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+#points(x = maxnet_coords_over2$Longitude, y = maxnet_coords_over2$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+#dev.off()
+
+#care methods plotting in loop
+
+#caret_methods <- grep('predicted_coord_', x = ls(), value = T)
+caret_preds_coords <- grep('predicted_coord_', x = ls(), value = T)
+
+colnames(res_no_nas) <- colnames(res)
+for (i in caret_preds_coords){
+  plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = (gsub(pattern = 'predicted_coord_*', replacement = '', gsub(pattern = '*Fit1', replacement = '', i))))
+  lines(x = crimea$x, y = crimea$y)
+  points(x = Daucus$Longitude, y = Daucus$Latitude, col =1, pch = pch, lwd = lwd)
+  #plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
+  points(x = get(i)[,2], y = get(i)[,1], col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+  #dev.off()
+}
+
+plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, xaxt = 'n', yaxt = 'n', ylab = '', xlab='', bty = 'n', main = '')
+legend('center', legend = c('Samples collected', 'Prediction'),  fill = c(1,2), bty = 'n')
+```
+
+
+##Model performance comparison
+```{r}
+
+#ones based on confusion matrices
+
+par(mfrow = c(1,3),    
+    oma = c(5,2,2,2))
+ylim = c(0, 0.95)
+barplot(c(maxnet_cm_accuracy, cm_accuracies), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Accuracy values', ylim = ylim)
+barplot(c(maxnet_cm_sensitivity, cm_sensitivities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Sensitivity values', ylim = ylim)
+barplot(c(maxnet_cm_specificity, cm_specificities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Specificity values', ylim = ylim)
+
+```
+
+```{r How similar different models are? based on prediction vectors}
+
+
+
+predicted_ps_and_true <- cbind(predicted_ps, as.character(p_test))
+
+colnames(predicted_ps_and_true) <- c('maxnet', methods_to_loop, 'TRUE')
+hclust_predicted_ps <- hclust(dist(t(predicted_ps_and_true)))
+
+plot(hclust_predicted_ps)
+
+#methods_to_loop_rearranged <- methods_to_loop[c(5, 2, 1, 8, 4, 3, 7)]
+
+#methods_to_dendro <-  append(methods_to_loop_rearranged, 'maxnet', after=2)
+
+methods_to_dendro <- list(predicted_coord_LogitBoost, predicted_coord_rf,maxnet_coords_over05,predicted_coord_mlpML, testing_coords,  predicted_coord_gbm,predicted_coord_nb,  predicted_coord_plsRglm, predicted_coord_svmRadial )
+
+par(mfrow = c (1,9))
+lwd <- 2
+for (i in methods_to_dendro){
+  tmp <- as.data.frame(i)
+  colnames(tmp) <- c('Longitude', 'Latitude')
+  #plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = '')
+  #lines(x = crimea$x, y = crimea$y)
+  
+  plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = '')
+  points(x = Daucus$Longitude, y = Daucus$Latitude, col =1, pch = pch, lwd = lwd)
+  points(x = (tmp)[,2], y = (tmp)[,1], col = 2,  pch = pch, lwd = lwd)
+  #dev.off()
+}
+
+#plotting gendrogram and corresponding prediction on map together
+
+layout(matrix(rbind(rep(1,9),rep(1,9), rep(1,9), 2:10), nrow = 4))
+par(mar = rep(2.5,4))
+plot(hclust_predicted_ps, hang = -1, cex= 3, cex.main = 3, main = 'Model comparison based on prediction similarity')
+
+#par(mfrow = c (1,8))
+lwd <- 2
+for (i in methods_to_dendro){
+  tmp <- as.data.frame(i)
+  colnames(tmp) <- c('Longitude', 'Latitude')
+  #plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = '')
+  #lines(x = crimea$x, y = crimea$y)
+  
+  plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = '')
+  points(x = Daucus$Longitude, y = Daucus$Latitude, col =1, pch = pch, lwd = lwd)
+  points(x = (tmp)[,2], y = (tmp)[,1], col = 2,  pch = pch, lwd = lwd)
+  #dev.off()
+}
+
+
+predicted_ps_numeric <- apply(predicted_ps_and_true, 2, as.numeric)
+
+cor(predicted_ps_numeric)
+
+library(corrplot)
+
+corrplot(cor(predicted_ps_numeric), tl.cex = 2)
+
+cmt <- cor.mtest(predicted_ps_numeric)
+
+corrplot(cmt$uppCI, p.mat = cmt$p, sig.level = 0.1)
+```
+
