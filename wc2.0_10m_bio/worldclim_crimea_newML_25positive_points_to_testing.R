@@ -660,14 +660,21 @@ pred_maxnet <- predict(model, as.data.frame(scale(df_testing, center = T, scale 
 which(pred_maxnet>2)
 #getting coordinates for prediction
 #maxnet_coords_over05 <- res_no_nas[-c(1:130),1:3][which(pred_maxnet>0.5),1:3]
-maxnet_coords_over1 <- as.data.frame(testing_coords_nonas[which(pred_maxnet>3),])
-colnames(maxnet_coords_over1) <- colnames(res)[1:2]
+
+#setting cutoff value
+
+cutoff <- -1
+maxnet_coords_over05 <- as.data.frame(testing_coords_nonas[which(pred_maxnet> cutoff),])
+colnames(maxnet_coords_over05) <- colnames(res)[1:2]
 maxnet_coords_over3 <- testing_coords_nonas[which(pred_maxnet>3),]
 
 predicted_p_test <- rep(0, length(p_test))
-predicted_p_test[which(pred_maxnet>1)] <- 1
+predicted_p_test[which(pred_maxnet> cutoff)] <- 1
 
 confusionMatrix(predicted_p_test, p_test)
+maxnet_cm_accuracy <- confusionMatrix(predicted_p_test, p_test)$overall['Accuracy']
+maxnet_cm_sensitivity <- confusionMatrix(predicted_p_test, p_test)$byClass['Sensitivity']
+maxnet_cm_specificity <- confusionMatrix(predicted_p_test, p_test)$byClass['Specificity']
 
 library(caret)
 #common settings
@@ -694,6 +701,10 @@ methods_to_loop <- c('plsRglm', 'LogitBoost','gbm', 'mlpML', 'nb', 'rf', 'svmRad
 
 accuracies <- c()
 mean_accuracies <- c()
+
+cm_accuracies <- c()
+cm_sensitivities <- c()
+cm_specificities <- c()
 for (i in methods_to_loop){
   set.seed(825)
   tmpFit1 <- caret::train(Class ~ ., data = df_trainingClass, #removing metadata columns, but no class column
@@ -716,6 +727,12 @@ for (i in methods_to_loop){
   tmp3  <- testing_coords[which(tmp2 ==1),]
 
   assign(paste0('predicted_coord_', i), tmp3)
+  
+  
+  #accuracies using confusion matrix
+  cm_accuracies <- c(cm_accuracies, confusionMatrix(tmp2, reference = p_test)$overall['Accuracy'])
+  cm_sensitivities <- c(cm_sensitivities, confusionMatrix(tmp2, reference = p_test)$byClass['Sensitivity'])
+  cm_specificities <- c(cm_specificities, confusionMatrix(tmp2, reference = p_test)$byClass['Specificity'])
 }
 
 par(mfrow = c(3,3),
@@ -729,7 +746,7 @@ alpha = 15
 plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Maxent')
 points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
 #points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=0.15),  pch = pch, lwd = lwd)
-points(x = maxnet_coords_over1$Longitude, y = maxnet_coords_over1$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
+points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
 #points(x = maxnet_coords_over2$Longitude, y = maxnet_coords_over2$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
 #dev.off()
 
@@ -748,8 +765,21 @@ for (i in caret_preds_coords){
   #dev.off()
 }
 
+plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, xaxt = 'n', yaxt = 'n', ylab = '', xlab='', bty = 'n', main = '')
+legend('center', legend = c('Samples collected', 'Prediction'),  fill = c(1,2), bty = 'n')
+
 names
 barplot(mean_accuracies, names.arg = methods_to_loop)
+
+#ones based on confusion matrices
+
+par(mfrow = c(1,3),
+    oma = c(5,2,2,2))
+ylim = c(0, 0.85)
+barplot(c(maxnet_cm_accuracy, cm_accuracies), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Accuracy values', ylim = ylim)
+barplot(c(maxnet_cm_sensitivity, cm_sensitivities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Sensitivity values', ylim = ylim)
+barplot(c(maxnet_cm_specificity, cm_specificities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Specificity values', ylim = ylim)
+
 #ROCs
 
 library(pROC)
