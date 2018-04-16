@@ -502,12 +502,17 @@ for (i in methods_to_loop){
 
 #par(mfrow = c(10,1),    mar = rep(1.5,4))
 #svg('/home/mikhail/Documents/lsh17/maxent_p.tragium_several_ps.svg', width = 8, height = 8)
-#svg('/home/mikhail/Documents/lsh17/maxent_p.tragium_p_1.svg', width = 8, height = 8)
+#
+svg('/home/mikhail/Documents/lsh17/maxent_p.tragium_p_1.svg', width = 15, height = 12)
+par(mfrow = c(3,3),
+     mar = rep(2.5,4))
 lwd = 9
 pch = 22
 alpha = 15
+cex= 3
 
-plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Maxent')
+
+plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Maxent', cex.main = cex)
 points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
 #points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=0.15),  pch = pch, lwd = lwd)
 points(x = maxnet_coords_over05$Longitude, y = maxnet_coords_over05$Latitude, col = adjustcolor("red", alpha=1),  pch = pch, lwd = lwd)
@@ -521,7 +526,7 @@ caret_preds_coords <- grep('predicted_coord_', x = ls(), value = T)
 
 colnames(res_no_nas) <- colnames(res)
 for (i in caret_preds_coords){
-  plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, main = (gsub(pattern = 'predicted_coord_*', replacement = '', gsub(pattern = '*Fit1', replacement = '', i))))
+  plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, cex.main = cex, main = (gsub(pattern = 'predicted_coord_*', replacement = '', gsub(pattern = '*Fit1', replacement = '', i))))
   lines(x = crimea$x, y = crimea$y)
   points(x = P.tragium$Longitude, y = P.tragium$Latitude, col =1, pch = pch, lwd = lwd)
   #plot(x = crimea$x, y = crimea$y, xlim = c(32.5, 36.6), ylim = c(44.4, 46), xlab = 'Longitude', ylab = 'Latitude',type = 'l', asp = 1, main = 'Pimpinella tragium distribution')
@@ -530,7 +535,9 @@ for (i in caret_preds_coords){
 }
 
 plot(x = res_no_nas$Longitude, y = res_no_nas$Latitude, type = 'n', asp = 1, pch = 20, xaxt = 'n', yaxt = 'n', ylab = '', xlab='', bty = 'n', main = '')
-legend('center', legend = c('Samples collected', 'Prediction'),  fill = c(1,2), bty = 'n')
+legend('center', legend = c('Samples collected', 'Prediction'),  fill = c(1,2), bty = 'n', cex = cex)
+dev.off()
+
 ```
 
 
@@ -539,18 +546,20 @@ legend('center', legend = c('Samples collected', 'Prediction'),  fill = c(1,2), 
 
 #ones based on confusion matrices
 
+png('/home/mikhail/Documents/lsh17/performance.png', height = 800, width = 1800, res =200)
 par(mfrow = c(1,3),    
     oma = c(5,2,2,2))
 ylim = c(0, 0.85)
 barplot(c(maxnet_cm_accuracy, cm_accuracies), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Accuracy values', ylim = ylim)
 barplot(c(maxnet_cm_sensitivity, cm_sensitivities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Sensitivity values', ylim = ylim)
 barplot(c(maxnet_cm_specificity, cm_specificities), names.arg = c('maxnet',methods_to_loop), las = 2, main = 'Specificity values', ylim = ylim)
+dev.off()
 
 ```
 
 ```{r How similar different models are? based on prediction vectors}
 
-
+png('/home/mikhail/Documents/lsh17/dendro_and_maps.png', width = 3000, height = 1400, res = 200)
 
 predicted_ps_and_true <- cbind(predicted_ps, as.character(p_test))
 
@@ -581,7 +590,7 @@ for (i in methods_to_dendro){
 
 #plotting gendrogram and corresponding prediction on map together
 
-layout(matrix(rbind(rep(1,9),rep(1,9), rep(1,9), 2:10), nrow = 4))
+layout(matrix(rbind(rep(1,9),rep(1,9), 2:10), nrow = 3))
 par(mar = rep(2.5,4))
 plot(hclust_predicted_ps, hang = -1, cex= 3, cex.main = 3, main = 'Model comparison based on prediction similarity')
 
@@ -598,7 +607,7 @@ for (i in methods_to_dendro){
   points(x = (tmp)[,2], y = (tmp)[,1], col = 2,  pch = pch, lwd = lwd)
   #dev.off()
 }
-
+dev.off()
 
 predicted_ps_numeric <- apply(predicted_ps_and_true, 2, as.numeric)
 
@@ -1333,4 +1342,42 @@ cmt <- cor.mtest(predicted_ps_numeric)
 
 corrplot(cmt$uppCI, p.mat = cmt$p, sig.level = 0.1)
 ```
+
+```{r Variables importance}
+par(mfrow = c (3,1))
+plot(varImp(object = nbFit))
+plot(varImp(object = rfFit))
+plot(varImp(object = mlpMLFit))
+
+#gbm is causing troubles
+
+varimps_for_a_var <- c()
+#for (i in methods_to_loop[-3]){
+ # for (vars in nbFit$coefnames){
+  #  assign(paste0('varimp_', vars, '_', i), varImp(get(paste0(i, 'Fit'))))
+  #tmp <- varImp(get(paste0(i, 'Fit')))$importance$X0 #columns 2 and 1 are the same
+ # }
+
+ # print(i)
+ # varimps_for_a_var <- cbind(varimps_for_a_var, tmp)
+#}
+
+# better not to use loop since the varimp objects hace varying structure
+
+varimps_for_a_var <- c()
+varImp(plsRglmFit)
+varImp(LogitBoostFit)
+
+
+rownames(varimps_for_a_var) <- bioclim_vars
+#rownames(varimps_for_a_var) <- paste0('BIO_', 1:19)
+varimps_for_a_var
+
+par(mar = c (20,1,1,1))
+boxplot(t(varimps_for_a_var), las = 2)
+##L <-   mget(grep('varimp_wc2.0_bio_10m_01.tif', x = ls(), value = T))
+##sapply(L, function(x) {x$importance['wc2.0_bio_10m_1.tif',]})
+
+```
+
 
